@@ -9,13 +9,13 @@ from typing import Any
 
 import pytest
 
-from openexecutive.providers.codex_auth import (
+from openexecutive.codex.auth import CodexAuthManager
+from openexecutive.codex.models import (
     CodexAuthConflict,
-    CodexAuthManager,
     CodexAuthUnavailable,
     CodexNoActiveLogin,
-    _official_codex_client,
 )
+from openexecutive.codex.runtime import create_official_codex_client
 
 
 class _CancelStatus(Enum):
@@ -76,7 +76,7 @@ class _FakeClient:
         self.closed = True
 
 
-def test_official_client_uses_dedicated_codex_home(
+def test_official_client_uses_isolated_codex_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import sys
@@ -106,13 +106,16 @@ def test_official_client_uses_dedicated_codex_home(
     )
 
     monkeypatch.setenv("BACKEND_SHARED_SECRET", "do-not-forward")
-    monkeypatch.setenv("EXEC_EMAIL_ADDRESS", "exec@example.com")
-    _official_codex_client()
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "do-not-forward")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/secret.json")
+    create_official_codex_client()
 
     expected = profile.parent / ".codex"
     assert captured["env"]["CODEX_HOME"] == str(expected)
-    assert captured["env"]["BACKEND_SHARED_SECRET"] == ""
-    assert captured["env"]["EXEC_EMAIL_ADDRESS"] == ""
+    assert captured["env"]["HOME"] == str(expected)
+    assert "BACKEND_SHARED_SECRET" not in captured["env"]
+    assert "AWS_ACCESS_KEY_ID" not in captured["env"]
+    assert "GOOGLE_APPLICATION_CREDENTIALS" not in captured["env"]
     assert expected.is_dir()
     assert expected.stat().st_mode & 0o777 == 0o700
 

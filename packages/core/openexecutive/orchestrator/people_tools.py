@@ -24,18 +24,15 @@ _VALID_PREFERRED_CHANNELS = {"email", "slack", "telegram", "discord", "any"}
 
 def _principal_write_error() -> str | None:
     """Return a safe denial unless this chat turn belongs to the principal."""
-    from openexecutive.orchestrator.schedule_tools import (
-        current_caller_person_id,
-        current_roster_write_authorized,
-    )
+    from openexecutive.orchestrator.request_context import get_current_actor
     from openexecutive.people.store import find_principal_person
 
     principal = find_principal_person()
-    caller_person_id = current_caller_person_id.get()
+    actor = get_current_actor()
     if (
-        not current_roster_write_authorized.get()
+        not actor.can_manage_roster
         or principal is None
-        or caller_person_id != principal.id
+        or actor.person_id != principal.id
     ):
         return "People roster changes require the authenticated principal."
     return None

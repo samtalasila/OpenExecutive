@@ -154,16 +154,6 @@ def _resolve_caller_person_id(request: Request) -> int | None:
             find_principal_person,
         )
         if caller_email:
-            from openexecutive.api.authorization import configured_principal_email
-
-            principal = find_principal_person()
-            configured_principal = configured_principal_email()
-            if (
-                principal is not None
-                and configured_principal
-                and caller_email == configured_principal
-            ):
-                return principal.id
             caller = find_person_by_email(caller_email)
             return caller.id if caller is not None else None
         principal = find_principal_person()

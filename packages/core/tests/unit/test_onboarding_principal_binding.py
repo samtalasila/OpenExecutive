@@ -4,9 +4,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
 from openexecutive.api.authorization import require_principal
+from openexecutive.cli import cli
 from openexecutive.onboarding import profile_builder
+from openexecutive.onboarding.wizard import WizardState
 from openexecutive.people import store as people_store
 from openexecutive.people.models import AuthorityScope
 
@@ -36,11 +39,18 @@ def test_first_onboarding_principal_is_bound_to_verified_caller_email(
     require_principal("alex.rivera@example.com")
 
 
-def test_legacy_principal_is_recovered_by_email_binding(people_db: Path) -> None:
+def test_legacy_principal_requires_explicit_email_migration(people_db: Path) -> None:
     people_store.upsert_person(
         full_name="Alex Rivera", is_principal=True, email="stale@example.com"
     )
 
+    with pytest.raises(profile_builder.PrincipalBindingError, match="bind-email"):
+        profile_builder._save_wizard_people(
+            {"principal_identity": "Alex Rivera, CEO"},
+            principal_email="alex@example.com",
+        )
+
+    person_id = people_store.bind_principal_email("alex@example.com")
     profile_builder._save_wizard_people(
         {"principal_identity": "Alex Rivera, CEO"},
         principal_email="alex@example.com",
@@ -48,8 +58,39 @@ def test_legacy_principal_is_recovered_by_email_binding(people_db: Path) -> None
 
     principal = people_store.find_principal_person()
     assert principal is not None
+    assert principal.id == person_id
     assert principal.email == "alex@example.com"
     assert AuthorityScope.WILDCARD in principal.authority_scope
+
+
+def test_profile_is_not_saved_when_principal_binding_fails(
+    people_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = WizardState(answers={"principal_identity": "Alex Rivera, CEO"})
+    profile_path = tmp_path / "profile.yaml"
+    monkeypatch.setattr(
+        people_store,
+        "upsert_person",
+        lambda **_kwargs: (_ for _ in ()).throw(ValueError("database unavailable")),
+    )
+
+    with pytest.raises(profile_builder.PrincipalBindingError):
+        profile_builder.build_and_save_profile(
+            state, profile_path=profile_path, principal_email="alex@example.com"
+        )
+
+    assert not profile_path.exists()
+
+
+def test_cli_binds_legacy_principal_email(people_db: Path) -> None:
+    people_store.upsert_person(full_name="Alex Rivera", is_principal=True)
+
+    result = CliRunner().invoke(cli, ["principal", "bind-email", "alex@example.com"])
+
+    assert result.exit_code == 0
+    principal = people_store.find_principal_person()
+    assert principal is not None
+    assert principal.email == "alex@example.com"
 
 
 def test_store_rejects_concurrent_second_principal(people_db: Path) -> None:

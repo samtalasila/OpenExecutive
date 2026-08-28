@@ -1,126 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-
 import Icon from "@/components/Icon";
-import {
-  cancelCodexDeviceLogin,
-  CodexAuthRequestError,
-  CodexAuthStatus,
-  getCodexAuthStatus,
-  startCodexDeviceLogin,
-} from "@/lib/api";
+import { CodexAuthStatus } from "@/lib/api";
 
-const STATUS_POLL_INTERVAL_MS = 2_000;
-const STATUS_REFRESH_INTERVAL_MS = 30_000;
-const ACCESS_RECHECK_INTERVAL_MS = 30_000;
-
-function useCodexConnection() {
-  const [connection, setConnection] = useState<CodexAuthStatus | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [forbidden, setForbidden] = useState(false);
-  // Only the newest status request may update the UI. Polls can overlap a
-  // cancel/manual refresh and otherwise resurrect stale "pending" state.
-  const requestSequence = useRef(0);
-
-  const refresh = useCallback(async () => {
-    const requestId = ++requestSequence.current;
-    try {
-      const next = await getCodexAuthStatus();
-      if (requestId !== requestSequence.current) return;
-      setConnection(next);
-      setError(null);
-      setForbidden(false);
-    } catch (err) {
-      if (requestId !== requestSequence.current) return;
-      if (err instanceof CodexAuthRequestError && err.status === 403) {
-        setForbidden(true);
-        setConnection(null);
-        setError(null);
-        return;
-      }
-      setError(err instanceof Error ? err.message : "Could not read Codex status.");
-    } finally {
-      if (requestId === requestSequence.current) setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  useEffect(() => {
-    if (connection?.state !== "pending") return;
-    const timer = window.setInterval(() => void refresh(), STATUS_POLL_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, [connection?.state, refresh]);
-
-  useEffect(() => {
-    if (!forbidden) return;
-    const timer = window.setInterval(() => void refresh(), ACCESS_RECHECK_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, [forbidden, refresh]);
-
-  useEffect(() => {
-    if (forbidden || connection?.state === "pending") return;
-    const timer = window.setInterval(() => void refresh(), STATUS_REFRESH_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, [connection?.state, forbidden, refresh]);
-
-  const connect = useCallback(async () => {
-    // Reserve a user-initiated tab before awaiting the API response. Opening
-    // after an await is commonly blocked as an unsolicited popup.
-    const signInWindow = window.open("", "_blank");
-    if (signInWindow) signInWindow.opener = null;
-    ++requestSequence.current;
-    setBusy(true);
-    setError(null);
-    try {
-      const login = await startCodexDeviceLogin();
-      setConnection({ state: "pending", ...login });
-      setLoading(false);
-      if (signInWindow && !signInWindow.closed) {
-        signInWindow.location.replace(login.verification_url);
-      }
-    } catch (err) {
-      signInWindow?.close();
-      await refresh();
-      if (err instanceof CodexAuthRequestError) {
-        if (err.status === 403) setForbidden(true);
-        // A different tab may have completed or started the login. The fresh
-        // status is authoritative, so do not overlay its state with a stale
-        // conflict message.
-        if (err.status === 403 || err.status === 409) return;
-      }
-      setError(err instanceof Error ? err.message : "Could not start ChatGPT sign-in.");
-    } finally {
-      setBusy(false);
-    }
-  }, [refresh]);
-
-  const cancel = useCallback(async () => {
-    ++requestSequence.current;
-    setBusy(true);
-    setError(null);
-    try {
-      await cancelCodexDeviceLogin();
-      await refresh();
-    } catch (err) {
-      await refresh();
-      if (err instanceof CodexAuthRequestError) {
-        if (err.status === 403) setForbidden(true);
-        if (err.status === 403 || err.status === 409) return;
-      }
-      setError(err instanceof Error ? err.message : "Could not cancel ChatGPT sign-in.");
-    } finally {
-      setBusy(false);
-    }
-  }, [refresh]);
-
-  return { connection, loading, busy, error, forbidden, connect, cancel, refresh };
-}
+import { useCodexConnection } from "./useCodexConnection";
 
 function PendingLogin({
   connection,
@@ -169,16 +52,15 @@ function PendingLogin({
 
 function ConnectedAccount({ connection }: { connection: CodexAuthStatus }) {
   const chatgpt = connection.auth_mode === "chatgpt";
+  const details = [connection.email, connection.plan_type, connection.auth_mode]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <div className="mt-4 rounded-lg border border-line bg-surface px-4 py-3 text-xs">
       <p className="font-medium text-fg">
         {chatgpt ? "ChatGPT connected" : "Codex is already authenticated"}
       </p>
-      <p className="mt-1 text-fg-muted">
-        {[connection.email, connection.plan_type, connection.auth_mode]
-          .filter(Boolean)
-          .join(" · ")}
-      </p>
+      {details && <p className="mt-1 text-fg-muted">{details}</p>}
     </div>
   );
 }
@@ -212,25 +94,8 @@ function ConnectionAction({
     );
   }
 
-  if (connection.state === "error") {
-    return (
-      <div className="mt-4">
-        <p className="text-xs text-rose-300">
-          {connection.error ?? "ChatGPT sign-in did not complete."}
-        </p>
-        <button
-          type="button"
-          onClick={() => void onConnect()}
-          disabled={busy}
-          className="mt-2 rounded-lg border border-line px-3 py-1.5 text-xs text-fg-muted hover:text-fg disabled:opacity-50"
-        >
-          {busy ? "Starting…" : "Try sign-in again"}
-        </button>
-      </div>
-    );
-  }
-
-  if (connection.state === "unavailable") {
+  if (connection.state === "error" || connection.state === "unavailable") {
+    const retrySignIn = connection.state === "error";
     return (
       <div className="mt-4">
         <p className="text-xs text-rose-300">
@@ -238,10 +103,11 @@ function ConnectionAction({
         </p>
         <button
           type="button"
-          onClick={() => void onRefresh()}
-          className="mt-2 rounded-lg border border-line px-3 py-1.5 text-xs text-fg-muted hover:text-fg"
+          onClick={() => void (retrySignIn ? onConnect() : onRefresh())}
+          disabled={busy}
+          className="mt-2 rounded-lg border border-line px-3 py-1.5 text-xs text-fg-muted hover:text-fg disabled:opacity-50"
         >
-          Retry
+          {busy ? "Starting…" : retrySignIn ? "Try sign-in again" : "Retry"}
         </button>
       </div>
     );

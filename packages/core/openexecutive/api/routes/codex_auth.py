@@ -10,13 +10,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from openexecutive.api.authorization import PrincipalOnly
-from openexecutive.providers.codex_auth import (
+from openexecutive.codex.auth import get_codex_auth_manager
+from openexecutive.codex.models import (
     CodexAuthConflict,
     CodexAuthStatus,
     CodexAuthUnavailable,
     CodexDeviceLogin,
     CodexNoActiveLogin,
-    get_codex_auth_manager,
 )
 
 router = APIRouter(prefix="/codex/auth")

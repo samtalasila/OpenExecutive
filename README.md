@@ -177,6 +177,13 @@ The first time you visit the app, you'll be guided through a wizard to set up yo
 
 After onboarding, the Executive will reference your specific company context in every response.
 
+If a pre-existing installation has a principal with a missing or incorrect
+sign-in email, repair it once from the API host (not through the web UI):
+
+```bash
+openexecutive principal bind-email owner@example.com
+```
+
 ## Interfaces
 
 | Interface | How to Use |
@@ -302,7 +309,6 @@ the app refuses to start.
 | `LOCAL_MODELS` | No | — | Comma-separated local model slugs to surface in the Council UI and route locally, e.g. `llama3.3,qwen2.5` |
 | `LOCAL_TIMEOUT_S` | No | `300` | Per-call timeout for local generation, in seconds |
 | `CODEX_HOME_PATH` | No | beside `COMPANY_PROFILE_PATH` | Dedicated Codex App Server credential/config directory; never inherits the server user's `~/.codex` login |
-| `PRINCIPAL_EMAIL` | No | — | Operator-controlled verified UI email for recovering a legacy principal row with a missing or incorrect email binding |
 | `HONCHO_ENABLED` | No | `false` | Per-person memory layer ([honcho.dev](https://honcho.dev)) — a peer card shared across all channels |
 | `HONCHO_API_KEY` | No | — | Required when `HONCHO_ENABLED=true` |
 | `HONCHO_BASE_URL` | No | — | Self-hosted Honcho endpoint |

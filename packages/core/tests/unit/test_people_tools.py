@@ -22,10 +22,7 @@ from openexecutive.orchestrator.people_tools import (
     handle_set_department_head,
     handle_upsert_person,
 )
-from openexecutive.orchestrator.schedule_tools import (
-    current_caller_person_id,
-    current_roster_write_authorized,
-)
+from openexecutive.orchestrator.request_context import ActorContext, current_actor
 from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
 
@@ -46,15 +43,15 @@ def shared_db(
     principal_id = people_store.upsert_person(
         full_name="Principal", is_principal=True, email="principal@example.com"
     )
-    caller_token = current_caller_person_id.set(principal_id)
-    roster_token = current_roster_write_authorized.set(True)
+    actor_token = current_actor.set(
+        ActorContext(person_id=principal_id, can_manage_roster=True)
+    )
     dept_store.initialize_db()
     agent_overrides.initialize_overrides_db()
     people_registry.invalidate()
     dept_registry.invalidate()
     yield db_path
-    current_roster_write_authorized.reset(roster_token)
-    current_caller_person_id.reset(caller_token)
+    current_actor.reset(actor_token)
 
 
 def _call(coro_fn, payload: dict) -> dict:
@@ -67,24 +64,26 @@ def _call(coro_fn, payload: dict) -> dict:
 
 
 def test_untrusted_channel_cannot_change_roster() -> None:
-    token = current_roster_write_authorized.set(False)
+    token = current_actor.set(ActorContext())
     try:
         result = _call(handle_upsert_person, {"full_name": "Outsider"})
     finally:
-        current_roster_write_authorized.reset(token)
+        current_actor.reset(token)
     assert "principal" in result["error"].lower()
 
 
 def test_non_principal_chat_cannot_change_roster() -> None:
     member_id = people_store.upsert_person(full_name="Member", email="member@example.com")
-    token = current_caller_person_id.set(member_id)
+    token = current_actor.set(
+        ActorContext(person_id=member_id, can_manage_roster=True)
+    )
     try:
         result = _call(
             handle_upsert_person,
             {"full_name": "Outsider", "email": "outsider@example.com", "authority_scopes": ["wildcard"]},
         )
     finally:
-        current_caller_person_id.reset(token)
+        current_actor.reset(token)
 
     assert "principal" in result["error"].lower()
     assert people_store.find_person_by_email("outsider@example.com") is None

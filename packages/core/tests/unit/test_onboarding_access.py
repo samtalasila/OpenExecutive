@@ -91,19 +91,6 @@ def test_completed_wizard_invalidates_same_owner_stale_sessions(
     ).status_code == 404
 
 
-def test_configured_bootstrap_owner_excludes_other_fallback_users(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("PRINCIPAL_EMAIL", "owner@example.com")
-
-    assert client.get(
-        "/onboard/start", headers={"X-Caller-Email": "member@example.com"}
-    ).status_code == 403
-    assert client.get(
-        "/onboard/start", headers={"X-Caller-Email": "owner@example.com"}
-    ).status_code == 200
-
-
 def test_existing_principal_is_the_only_onboarding_user(client: TestClient) -> None:
     people_store.upsert_person(
         full_name="Owner", is_principal=True, email="owner@example.com"

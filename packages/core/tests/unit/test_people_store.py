@@ -1,6 +1,7 @@
 """Store-level tests for the People feature."""
 from __future__ import annotations
 
+import sqlite3
 from datetime import date
 from pathlib import Path
 
@@ -22,6 +23,25 @@ def test_initialize_db_idempotent(db: Path) -> None:
     people_store.initialize_db()
     people_store.initialize_db()
     assert people_store.list_people() == []
+
+
+def test_initialize_db_repairs_legacy_duplicate_principals(db: Path) -> None:
+    canonical_id = people_store.upsert_person(full_name="Canonical", is_principal=True)
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute("DROP INDEX idx_people_single_active_principal")
+    duplicate_id = people_store.upsert_person(full_name="Duplicate", is_principal=True)
+
+    people_store.initialize_db()
+
+    principals = [person for person in people_store.list_people() if person.is_principal]
+    assert [person.id for person in principals] == [canonical_id]
+    duplicate = people_store.get_person(duplicate_id)
+    assert duplicate is not None and duplicate.is_principal is False
+    with sqlite3.connect(str(db)) as conn:
+        indexes = conn.execute("PRAGMA index_list(people)").fetchall()
+    assert ("idx_people_single_active_principal", 1) in {
+        (row[1], row[2]) for row in indexes
+    }
 
 
 def test_upsert_insert_returns_id(db: Path) -> None:

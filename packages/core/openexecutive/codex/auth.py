@@ -1,61 +1,28 @@
-"""Managed ChatGPT subscription login through OpenAI's official Codex SDK.
+"""Managed ChatGPT login through OpenAI's official Codex App Server.
 
-This module intentionally does not implement OAuth or handle tokens itself.
-``openai-codex`` starts the official Codex App Server over stdio; App Server
-owns device authorization, credential persistence, and refresh.  The manager
-below only keeps the live login handle needed to report/cancel an in-progress
-device-code flow.
+This module does not implement OAuth or process credentials. The official SDK
+owns device authorization, credential persistence, and refresh; this manager
+only owns the process-local device-login handle required for status/cancel.
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import logging
-import os
 from collections.abc import Callable
 from enum import Enum
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel
+from openexecutive.codex.models import (
+    CodexAuthConflict,
+    CodexAuthStatus,
+    CodexAuthUnavailable,
+    CodexDeviceLogin,
+    CodexNoActiveLogin,
+)
+from openexecutive.codex.runtime import create_official_codex_client
 
 logger = logging.getLogger(__name__)
-
-CodexAuthState = Literal[
-    "unavailable", "disconnected", "pending", "connected", "error"
-]
-
-
-class CodexAuthStatus(BaseModel):
-    state: CodexAuthState
-    auth_mode: str | None = None
-    email: str | None = None
-    plan_type: str | None = None
-    login_id: str | None = None
-    verification_url: str | None = None
-    user_code: str | None = None
-    error: str | None = None
-
-
-class CodexDeviceLogin(BaseModel):
-    login_id: str
-    verification_url: str
-    user_code: str
-
-
-class CodexAuthError(RuntimeError):
-    """Base class for safe, expected connection-flow failures."""
-
-
-class CodexAuthConflict(CodexAuthError):
-    """A login is already active or Codex is already authenticated."""
-
-
-class CodexAuthUnavailable(CodexAuthError):
-    """The official Codex runtime could not be initialized."""
-
-
-class CodexNoActiveLogin(CodexAuthError):
-    """Cancellation was requested without an active device-code flow."""
 
 
 def _enum_value(value: Any) -> str | None:
@@ -67,56 +34,12 @@ def _enum_value(value: Any) -> str | None:
     return str(value)
 
 
-def _codex_child_environment(codex_home: str) -> dict[str, str]:
-    """Override inherited secret variables before SDK launches App Server."""
-    environment = {"CODEX_HOME": codex_home}
-    sensitive_suffixes = (
-        "_API_KEY",
-        "_SECRET",
-        "_TOKEN",
-        "_PASSWORD",
-        "_EMAIL",
-        "_EMAIL_ADDRESS",
-    )
-    sensitive_names = {"DATABASE_URL", "EMAIL_ADDRESS", "PRINCIPAL_EMAIL"}
-    for name in os.environ:
-        if name.upper().endswith(sensitive_suffixes) or name.upper() in sensitive_names:
-            environment[name] = ""
-    return environment
-
-
-def _official_codex_client() -> Any:
-    # Imported lazily so merely importing the API does not start Codex or make
-    # test collection depend on a platform runtime binary.
-    from openai_codex import AsyncCodex, CodexConfig
-
-    from openexecutive.config import get_settings
-
-    settings = get_settings()
-    codex_home = settings.codex_home_path or (
-        settings.company_profile_path.parent / ".codex"
-    )
-    codex_home.mkdir(mode=0o700, parents=True, exist_ok=True)
-    # Do not inherit a developer's ~/.codex login. This dedicated directory is
-    # also the persistence seam hardened/configured by the credential step.
-    codex_home.chmod(0o700)
-
-    return AsyncCodex(
-        CodexConfig(
-            client_name="open_executive",
-            client_title="Open Executive",
-            client_version="0.1.0",
-            env=_codex_child_environment(str(codex_home)),
-            # Device login/account APIs are stable. Keep experimental RPCs off.
-            experimental_api=False,
-        )
-    )
-
-
 class CodexAuthManager:
     """One-process owner of the official Codex App Server auth session."""
 
-    def __init__(self, client_factory: Callable[[], Any] = _official_codex_client) -> None:
+    def __init__(
+        self, client_factory: Callable[[], Any] = create_official_codex_client
+    ) -> None:
         self._client_factory = client_factory
         self._client: Any = None
         self._active_login: Any = None
@@ -136,8 +59,6 @@ class CodexAuthManager:
                 "Codex is unavailable. Check the server logs and runtime installation."
             ) from exc
         self._client = client
-        # A fresh App Server is a fresh attempt; do not surface an old device
-        # login failure after transport recovery succeeds.
         self._last_error = None
         return client
 
@@ -155,10 +76,9 @@ class CodexAuthManager:
         if account is None:
             return None
         root = getattr(account, "root", account)
-        auth_mode = _enum_value(getattr(root, "type", None))
         return CodexAuthStatus(
             state="connected",
-            auth_mode=auth_mode,
+            auth_mode=_enum_value(getattr(root, "type", None)),
             email=getattr(root, "email", None),
             plan_type=_enum_value(getattr(root, "plan_type", None)),
         )
@@ -173,8 +93,7 @@ class CodexAuthManager:
                     user_code=self._active_login.user_code,
                 )
             try:
-                client = await self._get_client()
-                account_response = await client.account()
+                account_response = await (await self._get_client()).account()
             except CodexAuthUnavailable as exc:
                 return CodexAuthStatus(state="unavailable", error=str(exc))
             except Exception:
@@ -244,7 +163,6 @@ class CodexAuthManager:
                 )
 
         async with self._lock:
-            # A cancelled flow may already have been replaced by a newer login.
             if self._active_login is not handle:
                 return
             self._active_login = None
@@ -265,9 +183,6 @@ class CodexAuthManager:
             try:
                 response = await handle.cancel()
             except Exception as exc:
-                # A transport failure cannot leave a pending login blocking a
-                # retry. Drop both the App Server and its watcher; a later
-                # status/start creates a fresh official client.
                 task = self._login_task
                 self._active_login = None
                 self._login_task = None

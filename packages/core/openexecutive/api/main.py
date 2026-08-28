@@ -378,7 +378,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # The official Codex App Server is started lazily by the connection UI.
     # Close its stdio subprocess before tearing down the rest of the runtime.
-    from openexecutive.providers.codex_auth import close_codex_auth_manager
+    from openexecutive.codex.auth import close_codex_auth_manager
 
     await close_codex_auth_manager()
 

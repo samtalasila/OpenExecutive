@@ -48,15 +48,10 @@ def _verified_caller_email(x_caller_email: str | None) -> str:
 
 def _require_onboarding_access(caller_email: str) -> None:
     """Allow bootstrap once; afterward only the canonical principal may onboard."""
-    from openexecutive.api.authorization import configured_principal_email
     from openexecutive.people.store import find_principal_person
 
-    principal = find_principal_person()
-    configured_principal = configured_principal_email()
-    if principal is not None:
+    if find_principal_person() is not None:
         require_principal(caller_email)
-    elif configured_principal and caller_email != configured_principal:
-        raise HTTPException(status_code=403, detail="Principal access required.")
 
 
 def _step_required(state: WizardState) -> bool:
@@ -64,7 +59,7 @@ def _step_required(state: WizardState) -> bool:
     return bool(step and step["required"])
 
 
-def _invalidate_other_owner_sessions(_owner_email: str, completed_session_id: str) -> None:
+def _invalidate_pre_completion_sessions(completed_session_id: str) -> None:
     """A completed wizard makes every pre-completion snapshot stale and unsafe."""
     for session_id in list(_wizard_session_owners):
         if session_id != completed_session_id:
@@ -122,10 +117,17 @@ async def submit_answer(
             if _wizard_sessions.get(body.session_id) is not state:
                 raise HTTPException(status_code=409, detail="Onboarding session is stale.")
             _require_onboarding_access(caller_email)
-            from openexecutive.onboarding.profile_builder import build_and_save_profile
+            from openexecutive.onboarding.profile_builder import (
+                PrincipalBindingError,
+                build_and_save_profile,
+            )
 
-            build_and_save_profile(state, principal_email=caller_email)
-            _invalidate_other_owner_sessions(caller_email, body.session_id)
+            try:
+                build_and_save_profile(state, principal_email=caller_email)
+            except PrincipalBindingError as exc:
+                logger.warning("onboarding principal binding failed: %s", exc)
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            _invalidate_pre_completion_sessions(body.session_id)
 
             # Fire the watchlist-research workflow once at onboarding
             # completion so the principal's first /today after install

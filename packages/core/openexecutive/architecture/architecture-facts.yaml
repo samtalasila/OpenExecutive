@@ -130,26 +130,28 @@ providers:
       what: httpx-backed client targeting OpenRouter's OpenAI-format /chat/completions endpoint. Translates request/response/stream shape via openexecutive.providers.translator.
   codex_subscription_auth: |
     Step 2 adds principal-only ChatGPT subscription connection through
-    OpenAI's official ``openai-codex`` Python SDK. The SDK launches Codex
-    App Server over local stdio; App Server owns the device-code OAuth
-    ceremony, credential persistence, and token refresh. FastAPI and the
-    browser see only login_id, verification URL, one-time user code, and
-    account status — never access or refresh tokens. App Server gets an
-    isolated CODEX_HOME (configured by CODEX_HOME_PATH, otherwise a private
-    ``.codex`` directory beside COMPANY_PROFILE_PATH), so it never silently
-    adopts the deployment user's ~/.codex login. The live login handle is
-    process-local in ``providers.codex_auth.CodexAuthManager`` and the stdio
-    subprocess is closed with the FastAPI lifespan. ``api.authorization``
-    admits only the canonical (oldest active) principal Person whose email
-    matches the UI proxy's verified caller email; a first onboarding binds
-    that email, and a repeat onboarding cannot mint another principal.
-    PRINCIPAL_EMAIL is an operator-controlled recovery override for legacy
-    rows with a null/incorrect binding. Principal insertion takes SQLite's
-    IMMEDIATE write lock so concurrent bootstrap requests cannot create two.
-    This prevents a roster or chat-tool self-promotion from taking control of the
-    installation-wide App Server session. This step is AUTHENTICATION ONLY:
-    Codex models are not yet registered in ``get_provider`` or the Council
-    dropdown, so connecting cannot change model routing.
+    OpenAI's official ``openai-codex`` Python SDK. ``openexecutive.codex``
+    separates the public models, App Server runtime configuration, and
+    process-local login manager. The SDK launches Codex App Server over local
+    stdio; App Server owns the device-code OAuth ceremony, credential
+    persistence, and token refresh. FastAPI and the browser see only login_id,
+    verification URL, one-time user code, and account status — never access or
+    refresh tokens. App Server gets an isolated CODEX_HOME (configured by
+    CODEX_HOME_PATH, otherwise a private ``.codex`` directory beside
+    COMPANY_PROFILE_PATH) and an explicit minimal child environment, so it
+    never adopts the deployment user's ~/.codex login or OE deployment secrets.
+    The stdio subprocess is closed with the FastAPI lifespan. ``api.authorization``
+    admits only the canonical principal Person whose bound email matches the UI
+    proxy's verified caller email; first onboarding persists that binding before
+    saving the profile. SQLite enforces at most one active principal with a
+    partial unique index (legacy duplicates are deterministically demoted during
+    initialization). A legacy null/incorrect email is repaired once by the local
+    ``openexecutive principal bind-email <email>`` command — no environment
+    override authorizes it at runtime. This prevents roster or chat-tool
+    self-promotion from taking control of the installation-wide App Server
+    session. This step is AUTHENTICATION ONLY: Codex models are not yet
+    registered in ``get_provider`` or the Council dropdown, so connecting cannot
+    change model routing.
   feature_gate: |
     openexecutive.providers.feature_gate.apply_feature_gates(spec, kwargs)
     runs inside the OpenRouter provider before translation. Spec-driven
@@ -929,13 +931,13 @@ people:
     `lookup_person` tool when a user asks "tell the head of X".
   api: /people — CRUD plus by-scope lookup and archive. Reads remain available
     to signed-in users; mutation endpoints require the trusted UI proxy's
-    caller email to resolve to the canonical principal. The API refuses a
-    second principal or principal archival, makes the canonical principal
-    email immutable after first onboarding, and chat People tools require the
-    canonical-principal turn while refusing to mutate or archive a principal
-    record. This prevents a roster member from
-    self-promoting into principal-only capabilities (including managed Codex
-    subscription authentication).
+    caller email to resolve to the canonical principal. A partial unique SQLite
+    index permits at most one active principal; the API also refuses principal
+    archival, keeps the canonical principal email immutable after onboarding,
+    and chat People tools require a server-derived canonical-principal actor
+    context while refusing to mutate or archive a principal record. This
+    prevents a roster member from self-promoting into principal-only
+    capabilities (including managed Codex subscription authentication).
   executive_write_access: |
     The Executive can mutate the roster directly without going through the
     UI via the `list_people` / `upsert_person` / `archive_person` /
@@ -2142,7 +2144,8 @@ auth:
       2. Env fallback: ALLOWED_EMAILS comma-separated env var, used
          only when the roster is empty (fresh-install bootstrap).
          Once any Person has an email, the env var is ignored.
-    Roster fetch is cached for 5 minutes per Next.js server instance.
+    The roster is fetched without a cache on every sign-in and middleware
+    authorization check, so a removed user loses access on the next request.
   backend_gate: |
     BACKEND_SHARED_SECRET via x-api-key header gates every API route
     (see api.main._shared_secret_gate). The Next.js proxy at
@@ -2154,8 +2157,8 @@ auth:
     inbound `x-caller-email` from the client is stripped before
     re-stamping so a client cannot spoof another user. The backend
     uses this header in /chat to resolve the caller to a Person row
-    and on /codex/auth/* to require that the caller's Person row has
-    is_principal=true. A direct API caller still needs the shared
+    and on /codex/auth/* to require that it resolves to the canonical
+    principal. A direct API caller still needs the shared
     backend secret; possession of that secret is already trusted.
   codex_subscription_login: |
     The Settings page exposes the principal-only ChatGPT/Codex connection

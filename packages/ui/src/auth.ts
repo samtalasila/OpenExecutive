@@ -14,11 +14,6 @@ const ALLOWED_EMAILS_FALLBACK: ReadonlySet<string> = new Set(
 
 const BACKEND_BASE = process.env.BACKEND_BASE_URL ?? "http://localhost:8000";
 const BACKEND_SHARED_SECRET = process.env.BACKEND_SHARED_SECRET ?? "";
-// Operator-only legacy recovery override. It mirrors the backend setting and
-// admits the configured owner while their canonical People row is repaired.
-const PRINCIPAL_EMAIL = process.env.PRINCIPAL_EMAIL?.trim().toLowerCase() ?? "";
-let hasObservedNonEmptyRoster = false;
-
 // The roster is an authorization source, so fetch it for every sign-in and
 // middleware authorization check. Caching it would leave a removed user (or
 // an env-fallback user just after bootstrap) authorized until cache expiry.
@@ -60,22 +55,8 @@ async function checkEmailAllowed(
   email: string,
 ): Promise<{ allowed: boolean; source: string }> {
   const roster = await fetchRosterEmails();
-  if (PRINCIPAL_EMAIL && email === PRINCIPAL_EMAIL) {
-    return { allowed: true, source: "configured_principal" };
-  }
-  // During first-run bootstrap the configured owner is exclusive. Once the
-  // roster exists, its normal team allowlist remains authoritative for others.
   if (roster && roster.size > 0) {
-    hasObservedNonEmptyRoster = true;
     return { allowed: roster.has(email), source: "roster" };
-  }
-  if (
-    PRINCIPAL_EMAIL
-    && roster !== null
-    && roster.size === 0
-    && !hasObservedNonEmptyRoster
-  ) {
-    return { allowed: false, source: "configured_principal" };
   }
   return {
     allowed: ALLOWED_EMAILS_FALLBACK.has(email),

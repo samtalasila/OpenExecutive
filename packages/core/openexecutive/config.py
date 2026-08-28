@@ -140,15 +140,11 @@ class Settings(BaseSettings):
     local_timeout_s: float = Field(300.0, alias="LOCAL_TIMEOUT_S")
 
     # Dedicated credential/config root for OpenAI's official Codex App Server.
-    # When unset, providers.codex_auth derives a private sibling directory from
+    # When unset, codex.runtime derives a private sibling directory from
     # COMPANY_PROFILE_PATH, keeping OE's managed login isolated from any
     # developer-level ~/.codex session. Docker's company path is under /data,
     # so the derived directory also survives machine restarts.
     codex_home_path: Path | None = Field(None, alias="CODEX_HOME_PATH")
-
-    # Optional deployment-admin override for legacy installations whose
-    # canonical principal was created before browser email binding existed.
-    principal_email: str | None = Field(None, alias="PRINCIPAL_EMAIL")
 
     @field_validator("local_models", mode="before")
     @classmethod

@@ -56,6 +56,7 @@ from openexecutive.orchestrator.people_tools import (
     PEOPLE_TOOL_HANDLERS,
     PEOPLE_TOOLS,
 )
+from openexecutive.orchestrator.request_context import ActorContext, current_actor
 from openexecutive.orchestrator.research_tools import (
     RESEARCH_TOOL_HANDLERS,
     RESEARCH_TOOLS,
@@ -68,8 +69,6 @@ from openexecutive.orchestrator.router import (
 from openexecutive.orchestrator.schedule_tools import (
     SCHEDULE_TOOL_HANDLERS,
     SCHEDULE_TOOLS,
-    current_caller_person_id,
-    current_roster_write_authorized,
     current_session,
 )
 from openexecutive.orchestrator.session import Session
@@ -516,11 +515,14 @@ class Executive:
             _trunc(user_message, 80),
             extra={"turn_break": True},
         )
-        # Expose the current session to tool handlers (e.g. schedule_followup)
-        # without threading it through every signature.
+        # Expose server-derived turn state to tool handlers without threading
+        # it through every signature.
         current_session.set(session)
-        current_caller_person_id.set(person_id)
-        current_roster_write_authorized.set(can_manage_roster)
+        current_actor.set(
+            ActorContext(
+                person_id=person_id, can_manage_roster=can_manage_roster
+            )
+        )
         # Persona and model can be overridden via the Agent Council admin UI.
         # Override is admin-set (not per-request dynamic), so placing it in the
         # cached block is fine — cache misses once on change, then hits normally.
@@ -733,8 +735,11 @@ class Executive:
             extra={"turn_break": True},
         )
         current_session.set(session)
-        current_caller_person_id.set(person_id)
-        current_roster_write_authorized.set(can_manage_roster)
+        current_actor.set(
+            ActorContext(
+                person_id=person_id, can_manage_roster=can_manage_roster
+            )
+        )
 
         persona_override: str | None = None
         voice_persona_body: str | None = None

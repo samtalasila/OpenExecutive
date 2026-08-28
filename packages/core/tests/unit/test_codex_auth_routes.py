@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from openexecutive.api import authorization
 from openexecutive.api.routes import codex_auth as route
-from openexecutive.providers.codex_auth import (
+from openexecutive.codex.models import (
     CodexAuthConflict,
     CodexAuthStatus,
     CodexAuthUnavailable,
@@ -63,18 +63,19 @@ def test_status_requires_verified_principal_header(
     manager.status.assert_not_awaited()
 
 
-def test_configured_principal_recovers_legacy_unbound_record(
+def test_legacy_principal_environment_cannot_bypass_authorization(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("PRINCIPAL_EMAIL", "owner@example.com")
     monkeypatch.setattr(authorization, "find_person_by_email", lambda _email: None)
     monkeypatch.setattr(authorization, "find_principal_person", lambda: SimpleNamespace(id=1))
-    monkeypatch.setenv("PRINCIPAL_EMAIL", "owner@example.com")
     manager = SimpleNamespace(status=AsyncMock(return_value=CodexAuthStatus(state="disconnected")))
     monkeypatch.setattr(route, "get_codex_auth_manager", lambda: manager)
 
     assert client.get(
         "/codex/auth/status", headers={"X-Caller-Email": "owner@example.com"}
-    ).status_code == 200
+    ).status_code == 403
+    manager.status.assert_not_awaited()
 
 
 def test_principal_can_read_status(
