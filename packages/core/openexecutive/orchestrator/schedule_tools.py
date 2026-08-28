@@ -32,8 +32,6 @@ logger = logging.getLogger(__name__)
 current_session: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "current_session", default=None
 )
-
-
 def _record_send_to_activity(
     *,
     channel: str,

@@ -14,19 +14,10 @@ const ALLOWED_EMAILS_FALLBACK: ReadonlySet<string> = new Set(
 
 const BACKEND_BASE = process.env.BACKEND_BASE_URL ?? "http://localhost:8000";
 const BACKEND_SHARED_SECRET = process.env.BACKEND_SHARED_SECRET ?? "";
-
-// 5-minute cache. Cheap insurance against hammering the backend on every
-// sign-in attempt and keeps sign-in latency bounded if the backend is
-// momentarily slow. NextAuth's signIn callback is server-side (Node
-// runtime) so this module-level cache is per-server-instance.
-const ROSTER_TTL_MS = 5 * 60 * 1000;
-let rosterCache: { fetchedAt: number; emails: Set<string> } | null = null;
-
+// The roster is an authorization source, so fetch it for every sign-in and
+// middleware authorization check. Caching it would leave a removed user (or
+// an env-fallback user just after bootstrap) authorized until cache expiry.
 async function fetchRosterEmails(): Promise<Set<string> | null> {
-  const now = Date.now();
-  if (rosterCache && now - rosterCache.fetchedAt < ROSTER_TTL_MS) {
-    return rosterCache.emails;
-  }
   try {
     const headers: Record<string, string> = {};
     if (BACKEND_SHARED_SECRET) headers["x-api-key"] = BACKEND_SHARED_SECRET;
@@ -41,7 +32,6 @@ async function fetchRosterEmails(): Promise<Set<string> | null> {
     }
     const rows = (await res.json()) as Array<{ email: string; person_id: number }>;
     const emails = new Set(rows.map((r) => r.email.toLowerCase()));
-    rosterCache = { fetchedAt: now, emails };
     return emails;
   } catch (err) {
     console.warn(`[auth] roster fetch error; falling back to ALLOWED_EMAILS env: ${String(err)}`);

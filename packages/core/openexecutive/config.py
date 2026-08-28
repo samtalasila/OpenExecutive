@@ -139,6 +139,13 @@ class Settings(BaseSettings):
     # hosted API. Default generous so a slow first token doesn't time out.
     local_timeout_s: float = Field(300.0, alias="LOCAL_TIMEOUT_S")
 
+    # Dedicated credential/config root for OpenAI's official Codex App Server.
+    # When unset, codex.runtime derives a private sibling directory from
+    # COMPANY_PROFILE_PATH, keeping OE's managed login isolated from any
+    # developer-level ~/.codex session. Docker's company path is under /data,
+    # so the derived directory also survives machine restarts.
+    codex_home_path: Path | None = Field(None, alias="CODEX_HOME_PATH")
+
     @field_validator("local_models", mode="before")
     @classmethod
     def _parse_local_models(cls, v: Any) -> list[str]:
@@ -228,6 +235,8 @@ class Settings(BaseSettings):
             self.vector_store_path = base / self.vector_store_path
         if not self.company_profile_path.is_absolute():
             self.company_profile_path = base / self.company_profile_path
+        if self.codex_home_path is not None and not self.codex_home_path.is_absolute():
+            self.codex_home_path = base / self.codex_home_path
         return self
 
     slack_bot_token: str | None = Field(None, alias="SLACK_BOT_TOKEN")

@@ -89,8 +89,6 @@ def initialize_db(db_path: Path | None = None) -> None:
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (reports_to_person_id) REFERENCES people(id)
             );
-            CREATE INDEX IF NOT EXISTS idx_people_principal
-                ON people(is_principal) WHERE is_principal = 1;
             CREATE INDEX IF NOT EXISTS idx_people_archived
                 ON people(archived);
 
@@ -126,6 +124,32 @@ def initialize_db(db_path: Path | None = None) -> None:
             except sqlite3.OperationalError as exc:
                 if "duplicate column" not in str(exc).lower():
                     raise
+        _migrate_principal_constraint(conn)
+
+
+def _migrate_principal_constraint(conn: sqlite3.Connection) -> None:
+    """Repair legacy duplicate principals before enforcing the DB invariant."""
+    conn.execute("BEGIN IMMEDIATE")
+    rows = conn.execute(
+        "SELECT id FROM people WHERE is_principal = 1 AND archived = 0 ORDER BY id"
+    ).fetchall()
+    if len(rows) > 1:
+        canonical_id = rows[0]["id"]
+        duplicate_ids = [row["id"] for row in rows[1:]]
+        conn.executemany(
+            "UPDATE people SET is_principal = 0, updated_at = ? WHERE id = ?",
+            [(_now(), person_id) for person_id in duplicate_ids],
+        )
+        logger.warning(
+            "demoted duplicate principal rows during migration; canonical_id=%s duplicates=%s",
+            canonical_id,
+            duplicate_ids,
+        )
+    conn.execute("DROP INDEX IF EXISTS idx_people_principal")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_people_single_active_principal "
+        "ON people(is_principal) WHERE is_principal = 1 AND archived = 0"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -230,44 +254,49 @@ def upsert_person(
     leave_str = on_leave_until.isoformat() if on_leave_until else None
 
     with _get_conn(db_path) as conn:
-        if person_id is not None and person_id > 0:
-            conn.execute(
+        try:
+            if person_id is not None and person_id > 0:
+                conn.execute(
+                    """
+                    UPDATE people SET
+                        full_name=?, role=?, is_principal=?, department_slugs_json=?,
+                        email=?, slack_user_id=?, telegram_chat_id=?, discord_user_id=?,
+                        preferred_channel=?,
+                        response_sla_hours=?, on_leave_until=?, reports_to_person_id=?,
+                        updated_at=?
+                    WHERE id=?
+                    """,
+                    (
+                        full_name, role, int(is_principal), dept_json,
+                        email, slack_user_id, telegram_chat_id, discord_user_id,
+                        preferred_channel,
+                        response_sla_hours, leave_str, reports_to_person_id,
+                        now, person_id,
+                    ),
+                )
+                return person_id
+            cursor = conn.execute(
                 """
-                UPDATE people SET
-                    full_name=?, role=?, is_principal=?, department_slugs_json=?,
-                    email=?, slack_user_id=?, telegram_chat_id=?, discord_user_id=?,
-                    preferred_channel=?,
-                    response_sla_hours=?, on_leave_until=?, reports_to_person_id=?,
-                    updated_at=?
-                WHERE id=?
+                INSERT INTO people
+                    (full_name, role, is_principal, department_slugs_json,
+                     email, slack_user_id, telegram_chat_id, discord_user_id,
+                     preferred_channel,
+                     response_sla_hours, on_leave_until, reports_to_person_id,
+                     created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     full_name, role, int(is_principal), dept_json,
                     email, slack_user_id, telegram_chat_id, discord_user_id,
                     preferred_channel,
                     response_sla_hours, leave_str, reports_to_person_id,
-                    now, person_id,
+                    now, now,
                 ),
             )
-            return person_id
-        cursor = conn.execute(
-            """
-            INSERT INTO people
-                (full_name, role, is_principal, department_slugs_json,
-                 email, slack_user_id, telegram_chat_id, discord_user_id,
-                 preferred_channel,
-                 response_sla_hours, on_leave_until, reports_to_person_id,
-                 created_at, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                full_name, role, int(is_principal), dept_json,
-                email, slack_user_id, telegram_chat_id, discord_user_id,
-                preferred_channel,
-                response_sla_hours, leave_str, reports_to_person_id,
-                now, now,
-            ),
-        )
+        except sqlite3.IntegrityError as exc:
+            if is_principal:
+                raise ValueError("An active principal is already configured") from exc
+            raise
         return int(cursor.lastrowid or 0)
 
 
@@ -371,7 +400,8 @@ def find_person_by_email(email: str, db_path: Path | None = None) -> Person | No
         if not _table_exists(conn, "people"):
             return None
         row = conn.execute(
-            "SELECT * FROM people WHERE LOWER(email) = LOWER(?) AND archived = 0 LIMIT 1",
+            "SELECT * FROM people WHERE LOWER(email) = LOWER(?) AND archived = 0 "
+            "ORDER BY is_principal DESC, id ASC LIMIT 1",
             (email,),
         ).fetchone()
         if row is None:
@@ -428,12 +458,9 @@ def find_principal_person(db_path: Path | None = None) -> Person | None:
     row lets them flow into Honcho under the same person_id as the
     principal's Discord/email/Slack/Telegram traffic.
 
-    Tie-break: the schema does not enforce a single is_principal row, so
-    if onboarding ran twice (or someone toggled the flag) multiple rows
-    may match. ``ORDER BY id`` makes the oldest principal win
-    deterministically — a stale row would route web traffic to the
-    wrong peer card. If you re-run onboarding, archive the old
-    principal first.
+    SQLite enforces at most one non-archived principal. ``ORDER BY id``
+    remains defensive for databases that have not yet run the additive
+    migration; initialization deterministically demotes legacy duplicates.
     """
     if not _resolve_db_path(db_path).exists():
         return None
@@ -445,6 +472,34 @@ def find_principal_person(db_path: Path | None = None) -> Person | None:
         if row is None:
             return None
         return _row_to_person(row, conn)
+
+
+def bind_principal_email(email: str, db_path: Path | None = None) -> int:
+    """Bind the canonical principal to a verified UI email via local CLI repair."""
+    normalized = email.strip().lower()
+    if not normalized or "@" not in normalized:
+        raise ValueError("A valid principal email is required")
+    if not _resolve_db_path(db_path).exists():
+        raise ValueError("No People database exists")
+    initialize_db(db_path)
+    with _get_conn(db_path) as conn:
+        principal = conn.execute(
+            "SELECT id FROM people WHERE is_principal = 1 AND archived = 0"
+        ).fetchone()
+        if principal is None:
+            raise ValueError("No active principal is configured")
+        duplicate = conn.execute(
+            "SELECT id FROM people WHERE LOWER(email) = LOWER(?) "
+            "AND archived = 0 AND id != ?",
+            (normalized, principal["id"]),
+        ).fetchone()
+        if duplicate is not None:
+            raise ValueError("That email already belongs to another active person")
+        conn.execute(
+            "UPDATE people SET email = ?, updated_at = ? WHERE id = ?",
+            (normalized, _now(), principal["id"]),
+        )
+        return int(principal["id"])
 
 
 def list_people(

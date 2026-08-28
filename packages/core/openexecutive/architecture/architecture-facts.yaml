@@ -128,6 +128,30 @@ providers:
       what: Thin delegate over anthropic.AsyncAnthropic; default for the Claude trio when OPENROUTER_ENABLED is off.
     - id: OpenRouterProvider
       what: httpx-backed client targeting OpenRouter's OpenAI-format /chat/completions endpoint. Translates request/response/stream shape via openexecutive.providers.translator.
+  codex_subscription_auth: |
+    Step 2 adds principal-only ChatGPT subscription connection through
+    OpenAI's official ``openai-codex`` Python SDK. ``openexecutive.codex``
+    separates the public models, App Server runtime configuration, and
+    process-local login manager. The SDK launches Codex App Server over local
+    stdio; App Server owns the device-code OAuth ceremony, credential
+    persistence, and token refresh. FastAPI and the browser see only login_id,
+    verification URL, one-time user code, and account status — never access or
+    refresh tokens. App Server gets an isolated CODEX_HOME (configured by
+    CODEX_HOME_PATH, otherwise a private ``.codex`` directory beside
+    COMPANY_PROFILE_PATH) and an explicit minimal child environment, so it
+    never adopts the deployment user's ~/.codex login or OE deployment secrets.
+    The stdio subprocess is closed with the FastAPI lifespan. ``api.authorization``
+    admits only the canonical principal Person whose bound email matches the UI
+    proxy's verified caller email; first onboarding persists that binding before
+    saving the profile. SQLite enforces at most one active principal with a
+    partial unique index (legacy duplicates are deterministically demoted during
+    initialization). A legacy null/incorrect email is repaired once by the local
+    ``openexecutive principal bind-email <email>`` command — no environment
+    override authorizes it at runtime. This prevents roster or chat-tool
+    self-promotion from taking control of the installation-wide App Server
+    session. This step is AUTHENTICATION ONLY: Codex models are not yet
+    registered in ``get_provider`` or the Council dropdown, so connecting cannot
+    change model routing.
   feature_gate: |
     openexecutive.providers.feature_gate.apply_feature_gates(spec, kwargs)
     runs inside the OpenRouter provider before translation. Spec-driven
@@ -292,8 +316,14 @@ routing:
     `set_department_head` (openexecutive.orchestrator.people_tools) let
     the Executive manage the People roster directly from a chat turn —
     create or update a person, soft-delete them, or assign a department
-    head. Writes call `people_registry.invalidate()` /
-    `departments.registry.invalidate()` so subsequent reads see the new
+    head. Their write handlers require both the turn's server-bound caller
+    person id to equal the canonical principal and an authority flag set by
+    the trusted web route or local operator CLI; integration sender identity
+    (including an email From header) is never enough. A staff or forged
+    inbound chat cannot
+    add sign-in emails or grant approval scopes. Writes call
+    `people_registry.invalidate()` / `departments.registry.invalidate()`
+    so subsequent reads see the new
     state, and `set_department_head` also calls
     `ensure_head_persona_override` so the head-voice plumbing fires.
     Every invocation emits a `tool_invocation` audit event with
@@ -899,7 +929,15 @@ people:
     GET /people/by-scope/{token} — e.g. "ceo", "head-of-marketing",
     "department:engineering". The Executive uses this through the
     `lookup_person` tool when a user asks "tell the head of X".
-  api: /people — CRUD plus by-scope lookup and archive.
+  api: /people — CRUD plus by-scope lookup and archive. Reads remain available
+    to signed-in users; mutation endpoints require the trusted UI proxy's
+    caller email to resolve to the canonical principal. A partial unique SQLite
+    index permits at most one active principal; the API also refuses principal
+    archival, keeps the canonical principal email immutable after onboarding,
+    and chat People tools require a server-derived canonical-principal actor
+    context while refusing to mutate or archive a principal record. This
+    prevents a roster member from self-promoting into principal-only
+    capabilities (including managed Codex subscription authentication).
   executive_write_access: |
     The Executive can mutate the roster directly without going through the
     UI via the `list_people` / `upsert_person` / `archive_person` /
@@ -2106,7 +2144,8 @@ auth:
       2. Env fallback: ALLOWED_EMAILS comma-separated env var, used
          only when the roster is empty (fresh-install bootstrap).
          Once any Person has an email, the env var is ignored.
-    Roster fetch is cached for 5 minutes per Next.js server instance.
+    The roster is fetched without a cache on every sign-in and middleware
+    authorization check, so a removed user loses access on the next request.
   backend_gate: |
     BACKEND_SHARED_SECRET via x-api-key header gates every API route
     (see api.main._shared_secret_gate). The Next.js proxy at
@@ -2116,10 +2155,20 @@ auth:
     The Next.js proxy also stamps `x-caller-email` from the verified
     NextAuth session (lowercased) on every upstream request. The
     inbound `x-caller-email` from the client is stripped before
-    re-stamping so a client cannot spoof another user. Today the
-    backend uses this header in /chat to resolve the caller to a
-    Person row for Honcho's per-person memory; future routes
-    (audit/today filters etc.) can read the same signal.
+    re-stamping so a client cannot spoof another user. The backend
+    uses this header in /chat to resolve the caller to a Person row
+    and on /codex/auth/* to require that it resolves to the canonical
+    principal. A direct API caller still needs the shared
+    backend secret; possession of that secret is already trusted.
+  codex_subscription_login: |
+    The Settings page exposes the principal-only ChatGPT/Codex connection
+    ceremony. GET /codex/auth/status reads managed App Server account state;
+    POST /codex/auth/device/start returns OpenAI's verification URL and
+    one-time user code; POST /codex/auth/device/cancel cancels the active
+    attempt. The UI polls status every two seconds while pending. Hosted
+    deployments use device login because OpenAI's browser callback is
+    loopback-local to App Server. No OAuth token crosses the API/UI boundary,
+    and no Pi/Codex credential file is read directly.
 
 integrations:
   channel_access: |
