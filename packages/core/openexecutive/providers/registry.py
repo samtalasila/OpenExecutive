@@ -15,6 +15,7 @@ from fastapi import HTTPException
 
 from openexecutive.config import get_settings
 from openexecutive.providers.anthropic_provider import AnthropicProvider
+from openexecutive.providers.codex_provider import CodexProvider, is_codex_model
 from openexecutive.providers.feature_gate import FeatureSpec
 from openexecutive.providers.openai_compatible import OpenAICompatibleProvider
 from openexecutive.providers.openrouter_provider import OpenRouterProvider
@@ -108,15 +109,30 @@ def allowed_models() -> list[str]:
 
 
 def allowed_models_for(agent_id: str | None) -> list[str]:
-    """Per-agent allowlist for the Council UI dropdown and PATCH validator.
+    """Synchronous allowlist for non-Codex callers and legacy validation.
 
-    Every agent — specialists, the Executive, Quality Judge, and the
-    ``utility_fast`` virtual agent — gets the same ``allowed_models()``
-    list. (The ``utility_fast``-only free/cheap OpenRouter matrix was
-    removed; ``agent_id`` is retained for call-site stability and any
-    future per-agent rules.)
+    Codex's account-specific catalog is deliberately async because it is read
+    from the authenticated local App Server. API callers should use
+    :func:`allowed_models_for_async` so the Council never offers a model the
+    subscription cannot actually serve.
     """
     return allowed_models()
+
+
+async def allowed_models_for_async(agent_id: str | None) -> list[str]:
+    """Council allowlist, augmented with the connected subscription catalog."""
+    models = allowed_models_for(agent_id)
+    if not getattr(get_settings(), "codex_enabled", False):
+        return models
+    try:
+        from openexecutive.codex.catalog import discover_models
+
+        codex_models = await discover_models()
+    except Exception:
+        # A disconnected or temporarily unavailable App Server must not make
+        # unrelated configured providers disappear from the Council.
+        return models
+    return [*models, *(model for model in codex_models if model not in models)]
 
 
 def _is_claude(model: str) -> bool:
@@ -128,6 +144,7 @@ def _is_claude(model: str) -> bool:
 _anthropic_provider: AnthropicProvider | None = None
 _openrouter_provider: OpenRouterProvider | None = None
 _local_provider: OpenAICompatibleProvider | None = None
+_codex_provider: CodexProvider | None = None
 
 
 def _anthropic() -> AnthropicProvider:
@@ -179,6 +196,22 @@ def _local() -> OpenAICompatibleProvider:
     return _local_provider
 
 
+def _codex() -> CodexProvider:
+    global _codex_provider
+    if _codex_provider is None:
+        settings = get_settings()
+        if not getattr(settings, "codex_enabled", False):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Codex model routing requires CODEX_ENABLED=true. Then connect "
+                    "the principal ChatGPT subscription in Settings."
+                ),
+            )
+        _codex_provider = CodexProvider()
+    return _codex_provider
+
+
 def _openrouter() -> OpenRouterProvider:
     global _openrouter_provider
     if _openrouter_provider is None:
@@ -218,6 +251,8 @@ def get_provider(model: str) -> LLMProvider:
 
     * Claude family — Anthropic direct by default; OpenRouter when
       ``OPENROUTER_ENABLED`` is on.
+    * ``codex/<model>`` — the authenticated principal ChatGPT subscription
+      through Codex App Server, when ``CODEX_ENABLED`` is on.
     * Local models (slugs listed in ``LOCAL_MODELS`` with
       ``LOCAL_MODELS_ENABLED`` on) — the self-hosted OpenAI-compatible
       backend at ``LOCAL_BASE_URL``.
@@ -226,6 +261,8 @@ def get_provider(model: str) -> LLMProvider:
       is off, since we have no other backend that speaks those models.
     """
     settings = get_settings()
+    if is_codex_model(model):
+        return _codex()
     if _is_claude(model):
         if settings.openrouter_enabled:
             return _openrouter()
@@ -250,7 +287,8 @@ def get_provider(model: str) -> LLMProvider:
 
 def _reset_for_tests() -> None:
     """Drop cached provider singletons. Test-only — pytest fixtures call this."""
-    global _anthropic_provider, _openrouter_provider, _local_provider
+    global _anthropic_provider, _openrouter_provider, _local_provider, _codex_provider
     _anthropic_provider = None
     _openrouter_provider = None
     _local_provider = None
+    _codex_provider = None

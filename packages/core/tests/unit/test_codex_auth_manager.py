@@ -15,7 +15,10 @@ from openexecutive.codex.models import (
     CodexAuthUnavailable,
     CodexNoActiveLogin,
 )
-from openexecutive.codex.runtime import create_official_codex_client
+from openexecutive.codex.runtime import (
+    create_official_codex_app_server,
+    create_official_codex_client,
+)
 
 
 class _CancelStatus(Enum):
@@ -118,6 +121,48 @@ def test_official_client_uses_isolated_codex_environment(
     assert "GOOGLE_APPLICATION_CREDENTIALS" not in captured["env"]
     assert expected.is_dir()
     assert expected.stat().st_mode & 0o777 == 0o700
+
+
+def test_provider_client_uses_experimental_isolated_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    from openexecutive import config as config_module
+
+    captured: dict[str, Any] = {}
+
+    class _FakeConfig:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["config"] = kwargs
+
+    class _FakeClient:
+        def __init__(self, config: Any, approval_handler: Any) -> None:
+            captured["client_config"] = config
+            captured["handler"] = approval_handler
+
+    monkeypatch.setitem(sys.modules, "openai_codex", SimpleNamespace(CodexConfig=_FakeConfig))
+    monkeypatch.setitem(
+        sys.modules,
+        "openai_codex.client",
+        SimpleNamespace(CodexClient=_FakeClient),
+    )
+    profile = tmp_path / "company" / "profile.yaml"
+    monkeypatch.setattr(
+        config_module,
+        "get_settings",
+        lambda: SimpleNamespace(codex_home_path=None, company_profile_path=profile),
+    )
+
+    def handler(_method: str, _params: Any) -> dict[str, str]:
+        return {"decision": "decline"}
+
+    create_official_codex_app_server(handler, "/isolated/workspace")
+
+    assert captured["config"]["experimental_api"] is True
+    assert captured["config"]["cwd"] == "/isolated/workspace"
+    assert captured["config"]["env"]["CODEX_HOME"] == str(profile.parent / ".codex")
+    assert captured["handler"] is handler
 
 
 @pytest.mark.asyncio

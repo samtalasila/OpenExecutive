@@ -88,7 +88,7 @@ function ConnectionAction({
           {busy ? "Starting…" : "Connect ChatGPT"}
         </button>
         <p className="mt-2 text-[11px] text-fg-muted">
-          Principal-only. Model routing is not enabled until the later provider step.
+          Principal-only. With `CODEX_ENABLED=true`, your subscription&apos;s models appear in Agent Council.
         </p>
       </div>
     );

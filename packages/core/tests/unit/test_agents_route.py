@@ -34,6 +34,19 @@ def test_list_models_returns_allowed_models(client: TestClient) -> None:
     assert "claude-sonnet-4-6" in res.json()
 
 
+def test_codex_catalog_is_shared_by_dropdown_and_patch_validator(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _catalog(_agent_id: str | None = None) -> list[str]:
+        return ["claude-sonnet-4-6", "codex/gpt-5.4"]
+
+    monkeypatch.setattr(agents_route, "_allowed_models_for_async", _catalog)
+    assert "codex/gpt-5.4" in client.get("/agents/models").json()
+    patched = client.patch("/agents/cso", json={"model": "codex/gpt-5.4"})
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["model"] == "codex/gpt-5.4"
+
+
 def test_list_agents_returns_all_specialists(client: TestClient) -> None:
     res = client.get("/agents")
     assert res.status_code == 200

@@ -26,11 +26,20 @@ router = APIRouter()
 # from ``providers.allowed_models()`` so the dropdown always matches
 # what the runtime can actually serve — when OPENROUTER_ENABLED is on,
 # the curated OpenRouter set folds in automatically.
-from openexecutive.providers import allowed_models_for as _allowed_models_for  # noqa: E402
+from openexecutive.providers import (  # noqa: E402
+    allowed_models_for as _allowed_models_for,
+)
+from openexecutive.providers import (  # noqa: E402
+    allowed_models_for_async as _allowed_models_for_async,
+)
 
 
 def _allowed(agent_id: str | None = None) -> list[str]:
     return _allowed_models_for(agent_id)
+
+
+async def _allowed_async(agent_id: str | None = None) -> list[str]:
+    return await _allowed_models_for_async(agent_id)
 
 
 class AgentMeta(BaseModel):
@@ -310,10 +319,9 @@ def _build_detail(name: str) -> AgentDetail:
 
 
 @router.get("/agents/models", response_model=list[str])
-def list_models(agent_id: str | None = None) -> list[str]:
-    """Return the model allowlist. ``agent_id`` is accepted (and forwarded)
-    for call-site stability, but every agent currently gets the same list."""
-    return _allowed(agent_id)
+async def list_models(agent_id: str | None = None) -> list[str]:
+    """Return the account-aware model allowlist for the Council dropdown."""
+    return await _allowed_async(agent_id)
 
 
 def _is_known_agent(agent_id: str) -> bool:
@@ -341,12 +349,12 @@ def get_agent(agent_id: str) -> AgentDetail:
 
 
 @router.patch("/agents/{agent_id}", response_model=AgentDetail)
-def patch_agent(agent_id: str, patch: AgentPatch) -> AgentDetail:
+async def patch_agent(agent_id: str, patch: AgentPatch) -> AgentDetail:
     if not _is_known_agent(agent_id):
         raise HTTPException(status_code=404, detail="Unknown agent")
 
     raw = patch.model_dump(exclude_unset=True)
-    if patch.model is not None and patch.model not in _allowed(agent_id):
+    if patch.model is not None and patch.model not in await _allowed_async(agent_id):
         raise HTTPException(
             status_code=400,
             detail=f"Model {patch.model!r} is not in the allowed list",
@@ -467,7 +475,7 @@ async def _test_executive(req: AgentTestRequest) -> str:
 @router.post("/agents/{agent_id}/test", response_model=AgentTestResponse)
 async def test_agent(agent_id: str, req: AgentTestRequest) -> AgentTestResponse:
     """Run a one-off analyze() with the draft config — never persisted."""
-    if req.model is not None and req.model not in _allowed(agent_id):
+    if req.model is not None and req.model not in await _allowed_async(agent_id):
         raise HTTPException(
             status_code=400, detail=f"Model {req.model!r} is not in the allowed list"
         )

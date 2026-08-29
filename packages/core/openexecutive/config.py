@@ -139,6 +139,10 @@ class Settings(BaseSettings):
     # hosted API. Default generous so a slow first token doesn't time out.
     local_timeout_s: float = Field(300.0, alias="LOCAL_TIMEOUT_S")
 
+    # Enable authenticated ChatGPT subscription routing through Codex App
+    # Server. Login is still principal-only; this flag controls whether the
+    # subscription is considered an available LLM backend at startup.
+    codex_enabled: bool = Field(False, alias="CODEX_ENABLED")
     # Dedicated credential/config root for OpenAI's official Codex App Server.
     # When unset, codex.runtime derives a private sibling directory from
     # COMPANY_PROFILE_PATH, keeping OE's managed login isolated from any
@@ -171,11 +175,13 @@ class Settings(BaseSettings):
             self.anthropic_api_key
             or self.openrouter_enabled
             or self.local_models_enabled
+            or self.codex_enabled
         ):
             raise ValueError(
-                "No LLM provider configured. Set ANTHROPIC_API_KEY, or enable "
-                "OpenRouter (OPENROUTER_ENABLED=true + OPENROUTER_API_KEY), or "
-                "enable local models (LOCAL_MODELS_ENABLED=true + LOCAL_BASE_URL)."
+                "No LLM provider configured. Set ANTHROPIC_API_KEY, enable "
+                "OpenRouter (OPENROUTER_ENABLED=true + OPENROUTER_API_KEY), "
+                "enable local models (LOCAL_MODELS_ENABLED=true + LOCAL_BASE_URL), "
+                "or enable ChatGPT subscription routing (CODEX_ENABLED=true)."
             )
         return self
 
