@@ -12,6 +12,7 @@ from openexecutive.providers.registry import (
     OPENROUTER_MODELS,
     allowed_models,
     allowed_models_for,
+    allowed_models_for_async,
     get_provider,
 )
 
@@ -21,5 +22,6 @@ __all__ = [
     "OPENROUTER_MODELS",
     "allowed_models",
     "allowed_models_for",
+    "allowed_models_for_async",
     "get_provider",
 ]

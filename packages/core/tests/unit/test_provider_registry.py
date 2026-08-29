@@ -166,6 +166,7 @@ def _settings_stub(
     local_models: list[str] | None = None,
     local_api_key: str | None = None,
     local_timeout_s: float = 300.0,
+    codex_enabled: bool = False,
 ) -> Any:
     return SimpleNamespace(
         anthropic_api_key=anthropic_key,
@@ -180,6 +181,7 @@ def _settings_stub(
         local_models=local_models or [],
         local_api_key=local_api_key,
         local_timeout_s=local_timeout_s,
+        codex_enabled=codex_enabled,
     )
 
 
@@ -223,6 +225,33 @@ def test_non_claude_model_with_openrouter_on_routes_to_openrouter(
 
     provider = get_provider("openai/gpt-5")
     assert isinstance(provider, OpenRouterProvider)
+
+
+def test_codex_model_routes_to_dedicated_provider_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "openexecutive.providers.registry.get_settings",
+        lambda: _settings_stub(enabled=False, codex_enabled=True),
+    )
+    registry_mod._reset_for_tests()
+    from openexecutive.providers.codex_provider import CodexProvider
+
+    provider = get_provider("codex/gpt-5.4")
+    assert isinstance(provider, CodexProvider)
+    assert get_provider("codex/gpt-5.4") is provider
+
+
+def test_codex_model_requires_explicit_enablement(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(
+        "openexecutive.providers.registry.get_settings",
+        lambda: _settings_stub(enabled=False, codex_enabled=False),
+    )
+    registry_mod._reset_for_tests()
+    with pytest.raises(HTTPException, match="CODEX_ENABLED"):
+        get_provider("codex/gpt-5.4")
 
 
 def test_non_claude_model_with_openrouter_off_raises_400(

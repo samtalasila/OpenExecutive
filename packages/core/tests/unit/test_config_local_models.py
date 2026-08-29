@@ -18,6 +18,7 @@ _PROVIDER_VARS = (
     "LOCAL_BASE_URL",
     "LOCAL_MODELS",
     "LOCAL_API_KEY",
+    "CODEX_ENABLED",
 )
 
 
@@ -70,6 +71,12 @@ def test_no_provider_configured_is_rejected(monkeypatch: pytest.MonkeyPatch) -> 
     # ValidationError subclasses ValueError, so this catches the model_validator.
     with pytest.raises(ValueError, match="No LLM provider"):
         _build(monkeypatch)
+
+
+def test_anthropic_free_boot_with_connected_codex_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    s = _build(monkeypatch, CODEX_ENABLED="true")
+    assert s.anthropic_api_key is None
+    assert s.codex_enabled is True
 
 
 def test_anthropic_key_alone_still_boots(monkeypatch: pytest.MonkeyPatch) -> None:
